@@ -28,225 +28,116 @@
     <p class="intro">Bu sayfayı PS4 tarayıcısından açın. GoldHEN ve Payloader Server açık olmalıdır.</p>
     <button id="install" type="button" autofocus>KOL TEST’İ KUR</button>
     <p id="status" role="status" aria-live="polite">Kol Test hazırlanıyor…</p>
-    <p class="version">BLACK KONSOL • Kol Test Kurulum</p>
+    <p class="version">BLACK KONSOL • Kol Test Kurulum v2</p>
     <noscript>Kurulumu başlatmak için PS4 tarayıcısında JavaScript’i etkinleştirin.</noscript>
   </main>
   <script>
-    (function () {
-    var pageUrl = "https://blackkonsol.github.io/ds4test/";
-    var payloadUrl = "koltest.bin?v=9cc1420f1b79676e";
-    var metadataUrl = "koltest-package.json";
-    var payloadServer = "http://127.0.0.1:9090";
-    var serviceBase = "http://127.0.0.1:12818";
-    var serviceName = "koltest000-service-unified-v32";
-
-    var button = document.getElementById("install");
-    var statusNode = document.getElementById("status");
-    var payloadSent = false;
-    var installRequested = false;
-    var phase = "idle";
-
-    function show(message, type) {
-      statusNode.className = type || "";
-      statusNode.textContent = message;
-    }
-
-    function request(method, url, body, binary, form, timeout, done) {
-      var xhr = new XMLHttpRequest();
+  (function () {
+    var service = 'http://127.0.0.1:12822';
+    var server = 'http://127.0.0.1:9090';
+    var serviceName = 'koltest-installer-v1';
+    var payloadUrl = 'koltest.bin?v=860a68048f392987';
+    var button = document.getElementById('install');
+    var status = document.getElementById('status');
+    var phase = 'idle', sent = false, requested = false;
+    function show(message, kind) { status.textContent = message; status.className = kind || ''; }
+    function request(method, url, body, binary, timeout, done) {
+      var xhr = new XMLHttpRequest(), finished = false;
+      function finish(error, value, code) { if (finished) return; finished = true; done(error, value, code); }
       try {
-        xhr.open(method, url, true);
-        xhr.timeout = timeout;
-        if (binary) xhr.responseType = "arraybuffer";
-        if (form) {
-          xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
-          xhr.setRequestHeader("Accept", "application/json");
-        }
-        xhr.onload = function () {
-          done(null, binary ? xhr.response : xhr.responseText, xhr.status);
-        };
-        xhr.onerror = function () { done("Bağlantı kurulamadı."); };
-        xhr.ontimeout = function () { done("Yanıt zaman aşımına uğradı."); };
+        xhr.open(method, url, true); xhr.timeout = timeout;
+        if (binary) xhr.responseType = 'arraybuffer';
+        xhr.onload = function () { finish(null, binary ? xhr.response : xhr.responseText, xhr.status); };
+        xhr.onerror = function () { finish('Bağlantı kurulamadı.'); };
+        xhr.ontimeout = function () { finish('Yanıt zaman aşımına uğradı.'); };
         xhr.send(body);
-      } catch (error) {
-        done("İstek başlatılamadı.");
-      }
+      } catch (e) { finish('İstek başlatılamadı.'); }
     }
-
-    function parseJson(value) {
-      try { return JSON.parse(value); } catch (error) { return null; }
-    }
-
-    function checkService(done) {
-      request("GET", serviceBase + "/health", null, false, false, 1500, function (error, value, code) {
-        var data = !error && code === 200 && parseJson(value);
-        var running = Boolean(data && data.status === "ok");
-        done(running && data.service === serviceName && data.store_install === "v1" && data.queue_install_mode === "v1" && data.resume_crc32c === "v1" && data.install_recovery === "v1", running);
+    function json(value) { try { return JSON.parse(value); } catch (e) { return null; } }
+    function fail(message) { phase = 'idle'; requested = false; show(message, 'error'); }
+    function health(done) {
+      request('GET', service + '/health', null, false, 1500, function (error, value, code) {
+        var data = !error && code === 200 && json(value);
+        done(Boolean(data && data.status === 'ok' && data.service === serviceName), Boolean(data && data.status === 'ok'));
       });
     }
-
-    function serviceReady() {
-      phase = "ready";
-      if (installRequested) {
-        sendInstall();
-      } else {
-        show("Kol Test hazır. Kuruluma başlamak için X tuşuna basın.");
-      }
+    function ready() {
+      phase = 'ready';
+      if (requested) install();
+      else show('Kol Test hazır. Kuruluma başlamak için X tuşuna basın.');
     }
-
-    function waitForService(attempts) {
-      checkService(function (ready, occupied) {
-        if (ready) {
-          serviceReady();
-        } else if (occupied) {
-          startupFailed("Farklı bir Black Store/Kol Test servisi çalışıyor. PS4’ü yeniden başlatın. Black Store AutoRun etkinse geçici olarak kapatın.");
-        } else if (attempts > 1) {
-          setTimeout(function () { waitForService(attempts - 1); }, 500);
-        } else {
-          startupFailed("BIN gönderildi ancak Kol Test servisi yanıt vermedi. PS4’ü yeniden başlatıp GoldHEN’i etkinleştirin.");
-        }
+    function wait(attempts) {
+      health(function (ok, occupied) {
+        if (ok) ready();
+        else if (occupied) fail('Kol Test bağlantı noktası başka bir servis tarafından kullanılıyor. PS4’ü yeniden başlatın.');
+        else if (attempts > 1) setTimeout(function () { wait(attempts - 1); }, 500);
+        else fail('Payload gönderildi ancak Kol Test servisi yanıt vermedi. PS4’ü yeniden başlatıp tekrar deneyin.');
       });
     }
-
-    function startupFailed(message) {
-      phase = "idle";
-      installRequested = false;
-      show(message, "error");
-    }
-
-    function launchService() {
-      show("GoldHEN Payloader Server kontrol ediliyor…");
-      request("POST", payloadServer + "/status", null, false, false, 3000, function (error, value, code) {
-        var data = !error && code === 200 && parseJson(value);
-        if (!data || data.status !== "ready") {
-          var detail = error || (data && data.status) || (code ? "HTTP " + code : "Yanıt alınamadı.");
-          startupFailed("Payloader Server hazır değil. GoldHEN ayarlarından Payloader Server’i açın. Sayfa yerel bağlantıyı engelliyorsa tarayıcı bağlantısı ayrıca kontrol edilmelidir. (" + detail + ")");
-          return;
+    function load() {
+      show('GoldHEN Payloader Server kontrol ediliyor…');
+      request('POST', server + '/status', null, false, 3000, function (error, value, code) {
+        var data = !error && code === 200 && json(value);
+        if (!data || data.status !== 'ready') {
+          fail('Payloader Server’e ulaşılamadı. GoldHEN ayarlarından Payloader Server’i açın. (' + (error || 'Hazır yanıtı alınamadı.') + ')'); return;
         }
-        show("Kol Test payload’ı indiriliyor…");
-        request("GET", payloadUrl, null, true, false, 15000, function (fetchError, payload, fetchCode) {
-          if (fetchError || fetchCode !== 200 || !payload) {
-            startupFailed("koltest.bin indirilemedi. " + (fetchError || "HTTP " + fetchCode + ". Sunucudaki BIN dosyasını kontrol edin."));
-            return;
+        show('Kol Test payload’ı yükleniyor…');
+        request('GET', payloadUrl, null, true, 15000, function (error, payload, code) {
+          if (error || code !== 200 || !payload || payload.byteLength !== 7057 || new Uint8Array(payload)[0] !== 0xe9) {
+            fail('koltest.bin okunamadı veya sürümü farklı. ZIP’teki index.html ve koltest.bin dosyalarını birlikte yükleyin.'); return;
           }
-          if (payload.byteLength !== 1194809 || new Uint8Array(payload)[0] !== 0xe9) {
-            startupFailed("koltest.bin kurulum ZIP’indeki sürümle eşleşmiyor. ZIP’teki BIN dosyasını ds4test klasörüne yükleyin.");
-            return;
-          }
-          checkService(function (ready, occupied) {
-            if (ready) {
-              serviceReady();
-              return;
-            }
-            if (occupied) {
-              startupFailed("Farklı bir Black Store/Kol Test servisi çalışıyor. PS4’ü yeniden başlatın.");
-              return;
-            }
-            if (payloadSent) return;
-            payloadSent = true;
-            show("Kol Test servisi başlatılıyor…");
-            // Eski çalışan sayfadaki gibi: ham veri, özel Content-Type başlığı yok.
-            request("POST", payloadServer, payload, false, false, 4000, function () {
-              // Gönderim yanıtı kesilse bile sonucu yerel servisten doğrula.
-              waitForService(8);
-            });
+          health(function (ok, occupied) {
+            if (ok) { ready(); return; }
+            if (occupied) { fail('Kol Test bağlantı noktası kullanımda. PS4’ü yeniden başlatın.'); return; }
+            if (sent) { fail('Payload zaten gönderildi. PS4’ü yeniden başlatıp tekrar deneyin.'); return; }
+            sent = true;
+            request('POST', server, payload, false, 4000, function () { wait(10); });
           });
         });
       });
     }
-
-    function retry(message) {
-      phase = "ready";
-      installRequested = false;
-      show(message, "error");
+    function prepare() {
+      if (location.protocol !== 'https:' || location.hostname !== 'blackkonsol.github.io') {
+        fail('PS4 tarayıcısında https://blackkonsol.github.io/ds4test/ adresini açın.'); return;
+      }
+      if (!/PlayStation 4/i.test(navigator.userAgent)) { fail('Bu sayfayı PS4 tarayıcısından açın.'); return; }
+      phase = 'preparing'; show('Kol Test servisi kontrol ediliyor…');
+      health(function (ok, occupied) {
+        if (ok) ready();
+        else if (occupied) fail('Kol Test bağlantı noktası kullanımda. PS4’ü yeniden başlatın.');
+        else if (sent) fail('Payload daha önce gönderildi. PS4’ü yeniden başlatıp tekrar deneyin.');
+        else load();
+      });
     }
-
-    function sendInstall() {
-      phase = "installing";
-      installRequested = false;
-      show("Kol Test paketi hazırlanıyor…");
-      request("GET", metadataUrl, null, false, false, 10000, function (error, value, code) {
-        var metadata = parseJson(value);
-        if (error || code !== 200 || !metadata ||
-            metadata.url !== "https://blackkonsol.github.io/ds4test/manifests/b3c98cc209acac211951bed573a4faf49b5519ed9e89c978246c9ef44554cf3f.json" || metadata.id !== "IV0000-BKCT00001_00-KOLTESTI00000000" || String(metadata.size) !== "20447232") {
-          retry("Paket bilgisi alınamadı. " + (metadata && metadata.error || error || "HTTP " + code + ". koltest-package.json ve koltest.pkg dosyalarını kontrol edin."));
-          return;
+    function install() {
+      phase = 'installing'; requested = false; show('Kol Test indirme isteği PS4’e gönderiliyor…');
+      request('POST', service + '/api/install', null, false, 120000, function (error, value, code) {
+        var reply = json(value);
+        if (error || !reply) {
+          phase = 'submitted'; show('Sonuç doğrulanamadı. PS4 Bildirimler → İndirilenler bölümünü kontrol edin.', 'error'); return;
         }
-        var body = ["url", "id", "size"].map(function (key) {
-          return encodeURIComponent(key) + "=" + encodeURIComponent(metadata[key]);
-        }).join("&");
-        show("Kurulum isteği PS4’e gönderiliyor…");
-        request("POST", serviceBase + "/api/install-store", body, false, true, 120000, function (installError, replyText, replyCode) {
-          var reply = parseJson(replyText);
-          if (installError || !reply) {
-            phase = "submitted";
-            show("Sonuç doğrulanamadı. Yeniden denemeden önce PS4 Bildirimler → İndirilenler bölümünü kontrol edin.", "error");
-            return;
-          }
-          if (replyCode >= 200 && replyCode < 300 && reply.status === "success" && reply.stage === "started") {
-            phase = "submitted";
-            if (typeof reply.task_id !== "number" || reply.task_id < 0 || Math.floor(reply.task_id) !== reply.task_id) {
-              show("İndirme yanıtı doğrulanamadı. PS4 Bildirimler → İndirilenler bölümünü kontrol edin.", "error");
-              return;
-            }
-            show("İndirme başladı. Kurulumu PS4 Bildirimler → İndirilenler bölümünden takip edebilirsiniz.", "success");
-            button.textContent = "İNDİRME BAŞLADI";
-            return;
-          }
-          if (String(reply.error).toLowerCase() === "0x80990015") {
-            phase = "submitted";
-            show("Kol Test zaten kurulu veya indiriliyor olabilir. PS4 Bildirimler bölümünü kontrol edin.", "error");
-            return;
-          }
-          retry("Kurulum başlatılamadı. " + [reply.stage, reply.error].filter(Boolean).join(" ") + " • " + serviceName);
-        });
+        if (code === 200 && reply.status === 'success' && reply.stage === 'started' && typeof reply.task_id === 'number' && reply.task_id >= 0 && Math.floor(reply.task_id) === reply.task_id) {
+          phase = 'submitted'; button.textContent = 'İNDİRME BAŞLADI';
+          show('Kol Test indirme kuyruğuna eklendi. PS4 Bildirimler → İndirilenler bölümünden takip edebilirsiniz.', 'success'); return;
+        }
+        if (String(reply.error).toLowerCase() === '0x80990015' || (typeof reply.task_id === 'number' && reply.task_id >= 0)) {
+          phase = 'submitted'; show('Kol Test görevi mevcut veya başlatılamadı. PS4 Bildirimler → İndirilenler bölümünü kontrol edin. ' + (reply.error || ''), 'error'); return;
+        }
+        if (code === 200 && reply.status === 'success') {
+          phase = 'submitted'; show('İndirme yanıtı doğrulanamadı. PS4 Bildirimler → İndirilenler bölümünü kontrol edin.', 'error'); return;
+        }
+        phase = 'ready'; show('Kurulum başlatılamadı. ' + (reply.stage || '') + ' ' + (reply.error || ''), 'error');
       });
     }
-
-    function prepareService() {
-      if (location.protocol !== "https:" || location.hostname !== "blackkonsol.github.io") {
-        var link = document.createElement("a");
-        link.href = pageUrl;
-        link.textContent = pageUrl;
-        link.style.color = "#a1c7ff";
-        show("PS4 tarayıcısında bu adresi açın. ", "error");
-        statusNode.appendChild(link);
-        return;
-      }
-      if (!/PlayStation 4/i.test(navigator.userAgent)) {
-        show("Bu sayfayı PS4 tarayıcısından açın.", "error");
-        return;
-      }
-
-      phase = "preparing";
-      show("Kol Test servisi kontrol ediliyor…");
-      checkService(function (ready, occupied) {
-        if (ready) serviceReady();
-        else if (occupied) startupFailed("Farklı bir Black Store/Kol Test servisi çalışıyor. PS4’ü yeniden başlatın. Black Store AutoRun etkinse geçici olarak kapatın.");
-        else if (payloadSent) startupFailed("BIN daha önce gönderildi ancak servis yanıt vermiyor. PS4’ü yeniden başlatıp GoldHEN’i etkinleştirin.");
-        else launchService();
-      });
-    }
-
     button.onclick = function () {
-      if (phase === "submitted") return;
-      if (phase === "installing") {
-        show("Kurulum isteği işleniyor. Lütfen bekleyin.");
-        return;
-      }
-      if (phase === "ready") {
-        sendInstall();
-        return;
-      }
-      installRequested = true;
-      if (phase === "preparing") {
-        show("Kurulum isteği alındı. Kol Test servisi hazırlanıyor…");
-      } else {
-        prepareService();
-      }
+      if (phase === 'submitted' || phase === 'installing') return;
+      if (phase === 'ready') { install(); return; }
+      requested = true;
+      if (phase === 'preparing') show('Kol Test hazırlanıyor. Lütfen bekleyin…');
+      else prepare();
     };
-
-    prepareService();
-    })();
+    prepare();
+  })();
   </script>
 </body>
 </html>
